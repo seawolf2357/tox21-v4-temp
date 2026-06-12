@@ -16,28 +16,59 @@ for p in \
     "/home/work/.local/bin" \
     "/usr/local/bin" \
     "/opt/conda/bin" \
+    "/opt/conda/envs/qe/bin" \
     "$HOME/miniconda3/envs/qe/bin" \
-    "$HOME/miniconda3/bin"; do
+    "$HOME/miniconda3/bin" \
+    "$HOME/.conda/envs/qe/bin"; do
     if [ -x "$p/pw.x" ]; then QE_BIN="$p"; break; fi
 done
+# PATH 상의 pw.x 탐색 (which/command)
+if [ -z "$QE_BIN" ]; then
+    WHICH_PW=$(command -v pw.x 2>/dev/null)
+    [ -n "$WHICH_PW" ] && QE_BIN="$(dirname "$WHICH_PW")"
+fi
+# 기존 F6 작업 디렉토리(이전 H200 계산)에서 QE 흔적 탐색
+if [ -z "$QE_BIN" ]; then
+    FOUND=$(find /home/work /opt -name "pw.x" -type f -executable 2>/dev/null | head -1)
+    [ -n "$FOUND" ] && QE_BIN="$(dirname "$FOUND")"
+fi
 
 if [ -z "$QE_BIN" ]; then
-    echo "[INSTALL] QE not found — installing via conda..." | tee -a $LOG
-    conda create -n qe -c conda-forge qe -y 2>&1 | tail -5
-    QE_BIN="$HOME/miniconda3/envs/qe/bin"
+    echo "[INSTALL] QE not found — installing via conda (5-10min)..." | tee -a $LOG
+    if command -v conda >/dev/null 2>&1; then
+        conda create -n qe -c conda-forge qe -y 2>&1 | tail -8 | tee -a $LOG
+        QE_BIN="$(conda env list | grep -E '^qe ' | awk '{print $NF}')/bin"
+        [ -x "$QE_BIN/pw.x" ] || QE_BIN="$HOME/miniconda3/envs/qe/bin"
+    else
+        echo "ERROR: conda 없음 — QE 설치 불가. H200에 QE 수동 설치 필요." | tee -a $LOG
+        echo "       (apt install quantum-espresso 또는 conda 설치)" | tee -a $LOG
+        exit 1
+    fi
+fi
+if [ ! -x "$QE_BIN/pw.x" ] || [ ! -x "$QE_BIN/ph.x" ]; then
+    echo "ERROR: pw.x 또는 ph.x 실행파일 없음 in $QE_BIN" | tee -a $LOG
+    ls -la "$QE_BIN" 2>/dev/null | grep -E "pw.x|ph.x" | tee -a $LOG
+    exit 1
 fi
 echo "[OK] QE bin: $QE_BIN" | tee -a $LOG
+"$QE_BIN/pw.x" --version 2>/dev/null | head -1 | tee -a $LOG || echo "  (version check skipped)" | tee -a $LOG
 
 # 슈도포텐셜 확인
 PSEUDO_DIR="$WORKDIR/pseudo"
 mkdir -p "$PSEUDO_DIR"
 for f in La.paw.z_11.atompaw.wentzcovitch.v1.2.upf ni_pbe_v1.4.uspp.F.UPF O.pbe-n-kjpaw_psl.0.1.UPF f_pbe_v1.4.uspp.F.UPF; do
-    if [ ! -f "$PSEUDO_DIR/$f" ]; then
+    if [ ! -s "$PSEUDO_DIR/$f" ]; then
         echo "[DL] $f" | tee -a $LOG
-        wget -q "https://pseudopotentials.quantum-espresso.org/upf_files/$f" -O "$PSEUDO_DIR/$f" || \
-        wget -q "https://www.quantum-espresso.org/upf_files/$f" -O "$PSEUDO_DIR/$f" || \
+        # 검증된 H100 사본을 GitHub temp repo에서 (확실)
+        wget -q "https://raw.githubusercontent.com/seawolf2357/tox21-v4-temp/main/pseudo/$f" -O "$PSEUDO_DIR/$f" || \
         echo "WARNING: $f download failed — place manually in $PSEUDO_DIR" | tee -a $LOG
     fi
+    # 다운로드 검증 (UPF 헤더 확인)
+    if ! head -c 200 "$PSEUDO_DIR/$f" 2>/dev/null | grep -qi "UPF\|PP_INFO\|<UPF"; then
+        echo "ERROR: $f is not a valid UPF file (size=$(stat -c%s "$PSEUDO_DIR/$f" 2>/dev/null))" | tee -a $LOG
+        exit 1
+    fi
+    echo "  [OK] $f ($(stat -c%s "$PSEUDO_DIR/$f") bytes)" | tee -a $LOG
 done
 
 # ─── SCF 입력 파일 생성 ───────────────────────────────────────────────
