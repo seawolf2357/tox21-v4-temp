@@ -7,16 +7,17 @@ mkdir -p $L; cd $L
 LOG=$L/run.log
 echo "START $(date)" > $LOG
 
-# 1. QE 설치 (conda-forge)
+# 1. QE 설치 (conda-forge, 플러그인 우회) — 시스템 /usr/bin/pw.x는 buffer overflow, conda QE로 회피 시도
 source /home/work/miniconda3/etc/profile.d/conda.sh 2>/dev/null
-if ! conda env list | grep -qE "^qe[[:space:]]"; then
-  echo "[install] QE conda-forge 설치중 (~10분)..." | tee -a $LOG
-  conda create -n qe -c conda-forge "qe>=7.2" -y >> $LOG 2>&1
+QE=/home/work/miniconda3/envs/qe/bin
+if [ ! -x "$QE/pw.x" ]; then
+  echo "[install] conda QE 설치중 (~10분, NO_PLUGINS)..." | tee -a $LOG
+  CONDA_NO_PLUGINS=true conda create -n qe -c conda-forge "qe>=7.2" -y >> $LOG 2>&1
 fi
-conda activate qe
-QE=$(dirname "$(which pw.x 2>/dev/null)")
-if [ ! -x "$QE/pw.x" ]; then echo "QE_INSTALL_FAIL" | tee -a $LOG; exit 1; fi
-echo "QE=$QE" | tee -a $LOG
+if [ ! -x "$QE/pw.x" ]; then echo "CONDA_QE_INSTALL_FAIL — H100 우회 필요" | tee -a $LOG; exit 1; fi
+export LD_LIBRARY_PATH=$QE/../lib:${LD_LIBRARY_PATH:-}
+echo "QE=$QE (conda)" | tee -a $LOG
+"$QE/pw.x" --version 2>&1 | head -1 | tee -a $LOG
 
 # 2. 슈도 다운로드
 PD=$L/pseudo; mkdir -p $PD; cd $PD
@@ -63,7 +64,7 @@ B 0.666667 0.333333 0.500000
 K_POINTS automatic
 12 12 12 0 0 0
 EOF
-  mpirun --allow-run-as-root -np 20 $QE/pw.x -in vcr.in > vcr.out 2>&1
+  "$QE/mpirun" --allow-run-as-root -np 20 "$QE/pw.x" -in vcr.in > vcr.out 2>&1
   if grep -q "JOB DONE" vcr.out; then echo "$P VCR_DONE $(date)" >> $LOG
   else echo "$P VCR_FAIL/STOP $(date)" >> $LOG; fi
 }
